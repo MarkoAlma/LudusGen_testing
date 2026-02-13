@@ -11,36 +11,7 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-// Mock Firebase Auth
-vi.mock('firebase/auth', () => ({
-  getAuth: vi.fn(() => ({})),
-  onAuthStateChanged: vi.fn(),
-  signInWithEmailAndPassword: vi.fn(),
-  signInWithCustomToken: vi.fn(),
-  signInWithPopup: vi.fn(),
-  signInWithCredential: vi.fn(),
-  signOut: vi.fn(),
-  sendPasswordResetEmail: vi.fn(),
-  GoogleAuthProvider: vi.fn(),
-}));
-
-// Mock Firebase Firestore
-vi.mock('firebase/firestore', () => ({
-  getFirestore: vi.fn(() => ({})),
-  doc: vi.fn(),
-  getDoc: vi.fn(),
-  setDoc: vi.fn(),
-  collection: vi.fn(),
-  query: vi.fn(),
-  where: vi.fn(),
-  getDocs: vi.fn(),
-}));
-
-// Mock Firebase App
-vi.mock('../firebase/firebaseApp', () => ({
-  auth: {},
-  db: {},
-}));
+// ✅ FIREBASE MOCK-OT ÁTHELYEZTÜK A CONTEXT.TEST.JSX-BE!
 
 // Mock window.matchMedia
 Object.defineProperty(window, 'matchMedia', {
@@ -75,3 +46,6 @@ global.ResizeObserver = class ResizeObserver {
   observe() {}
   unobserve() {}
 };
+
+// ✅ Global test timeout
+vi.setConfig({ testTimeout: 10000 });

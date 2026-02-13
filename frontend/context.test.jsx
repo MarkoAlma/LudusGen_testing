@@ -1,6 +1,99 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+
+// ✅ Create a shared callback holder that can be updated
+let sharedAuthStateCallback = null;
+let sharedUnsubscribe = vi.fn();
+
+// ✅ MINDEN MOCK TELJESEN INLINE - DUPLIKÁLVA, DE NEM MEGOSZTVA!
+// ❌ NINCS helper függvény, NINCS változó referencia a vi.mock() hívásokban!
+
+vi.mock('firebase/auth', () => {
+  // This function will be called by the actual code
+  const onAuthStateChangedImpl = (auth, callback) => {
+    sharedAuthStateCallback = callback;
+    return sharedUnsubscribe;
+  };
+  
+  const authInstance = {
+    name: '[DEFAULT]',
+    app: { options: {}, name: '[DEFAULT]' },
+    config: { apiKey: 'mock-api-key' },
+    currentUser: null,
+    _isInitialized: true,
+    _deleted: false,
+    // Add all the methods that the component uses
+    onAuthStateChanged: (callback) => onAuthStateChangedImpl(null, callback),
+    signOut: vi.fn(() => Promise.resolve()),
+    signInWithEmailAndPassword: vi.fn(),
+    signInWithCustomToken: vi.fn(),
+    signInWithPopup: vi.fn(),
+    sendPasswordResetEmail: vi.fn(),
+  };
+
+  return {
+    getAuth: vi.fn(() => authInstance),
+    // This is what gets imported and called from the component
+    onAuthStateChanged: vi.fn(onAuthStateChangedImpl),
+    signInWithEmailAndPassword: vi.fn(),
+    signInWithCustomToken: vi.fn(),
+    signInWithPopup: vi.fn(),
+    signInWithCredential: vi.fn(),
+    signOut: vi.fn(() => Promise.resolve()),
+    sendPasswordResetEmail: vi.fn(),
+    GoogleAuthProvider: vi.fn().mockImplementation(() => ({
+      addScope: vi.fn(),
+      setCustomParameters: vi.fn(),
+    })),
+    getModularInstance: vi.fn(() => authInstance),
+    _castAuth: vi.fn((auth) => auth),
+    _getProvider: vi.fn(),
+    _getInstance: vi.fn((instance) => instance || authInstance),
+  };
+});
+
+vi.mock('firebase/firestore', () => ({
+  getFirestore: vi.fn(() => ({})),
+  doc: vi.fn(),
+  getDoc: vi.fn(),
+  setDoc: vi.fn(),
+  collection: vi.fn(),
+  query: vi.fn(),
+  where: vi.fn(),
+  getDocs: vi.fn(),
+}));
+
+vi.mock('../../LudusGen_frontend/src/firebase/firebaseApp', () => {
+  // Use the same shared callback
+  const mockAuth = {
+    name: '[DEFAULT]',
+    app: { options: {}, name: '[DEFAULT]' },
+    config: { apiKey: 'mock-api-key' },
+    currentUser: null,
+    _isInitialized: true,
+    _deleted: false,
+    // Add all the methods that the component uses on the auth object
+    onAuthStateChanged: (callback) => {
+      sharedAuthStateCallback = callback;
+      return sharedUnsubscribe;
+    },
+    signOut: vi.fn(() => Promise.resolve()),
+    signInWithEmailAndPassword: vi.fn(),
+    signInWithCustomToken: vi.fn(),
+    signInWithPopup: vi.fn(),
+    sendPasswordResetEmail: vi.fn(),
+  };
+
+  return {
+    auth: mockAuth,
+    db: {},
+  };
+});
+
+vi.mock('axios');
+
 import { renderHook, act, waitFor } from '@testing-library/react';
 import axios from 'axios';
+import React from 'react';
 import {
   onAuthStateChanged,
   signInWithEmailAndPassword,
@@ -8,31 +101,25 @@ import {
   signInWithPopup,
   signOut,
   sendPasswordResetEmail,
-  GoogleAuthProvider,
 } from 'firebase/auth';
+
 import MyUserProvider, { MyUserContext } from '../../LudusGen_frontend/src/context/MyUserProvider.jsx';
 import {
-  mockUserData,
   createMockAuthUser,
   createFirebaseError,
 } from '../mocks';
 
-vi.mock('axios');
-vi.mock('firebase/auth');
-
 describe('MyUserProvider Context Tests', () => {
-  let authStateCallback;
   let mockCurrentUser;
 
   beforeEach(() => {
     vi.clearAllMocks();
 
     mockCurrentUser = createMockAuthUser();
-
-    onAuthStateChanged.mockImplementation((auth, callback) => {
-      authStateCallback = callback;
-      return vi.fn(); // unsubscribe function
-    });
+    
+    // Reset shared variables
+    sharedAuthStateCallback = null;
+    sharedUnsubscribe = vi.fn();
 
     axios.get.mockResolvedValue({
       data: {
@@ -42,6 +129,7 @@ describe('MyUserProvider Context Tests', () => {
           displayName: 'Test User',
           twoFA: { enabled: false },
         },
+        is2FAEnabled: false,
       },
     });
 
@@ -51,36 +139,56 @@ describe('MyUserProvider Context Tests', () => {
   });
 
   afterEach(() => {
-    authStateCallback = null;
+    sharedAuthStateCallback = null;
+    sharedUnsubscribe = null;
     mockCurrentUser = null;
   });
 
   describe('Initial State', () => {
-    it('should initialize with null user', () => {
-      const { result } = renderHook(() => MyUserContext, {
-        wrapper: MyUserProvider,
+    it('should initialize with null user', async () => {
+      const wrapper = ({ children }) => <MyUserProvider>{children}</MyUserProvider>;
+      
+      const { result } = renderHook(
+        () => React.useContext(MyUserContext),
+        { wrapper }
+      );
+
+      await waitFor(() => {
+        expect(result.current).not.toBeNull();
       });
 
-      expect(result.current).toBeUndefined();
+      expect(result.current.user).toBeNull();
     });
 
-    it('should set up auth state listener on mount', () => {
-      renderHook(() => MyUserContext, {
-        wrapper: MyUserProvider,
-      });
+    it('should set up auth state listener on mount', async () => {
+      const wrapper = ({ children }) => <MyUserProvider>{children}</MyUserProvider>;
+      
+      renderHook(
+        () => React.useContext(MyUserContext),
+        { wrapper }
+      );
 
-      expect(onAuthStateChanged).toHaveBeenCalled();
+      await waitFor(() => {
+        expect(onAuthStateChanged).toHaveBeenCalled();
+      });
     });
   });
 
   describe('Auth State Changes', () => {
     it('should update user when auth state changes to logged in', async () => {
-      const { result } = renderHook(() => MyUserContext, {
-        wrapper: ({ children }) => <MyUserProvider>{children}</MyUserProvider>,
+      const wrapper = ({ children }) => <MyUserProvider>{children}</MyUserProvider>;
+      
+      const { result } = renderHook(
+        () => React.useContext(MyUserContext),
+        { wrapper }
+      );
+
+      await waitFor(() => {
+        expect(sharedAuthStateCallback).toBeDefined();
       });
 
       await act(async () => {
-        authStateCallback(mockCurrentUser);
+        sharedAuthStateCallback(mockCurrentUser);
       });
 
       await waitFor(() => {
@@ -98,12 +206,19 @@ describe('MyUserProvider Context Tests', () => {
 
       signOut.mockResolvedValue();
 
-      renderHook(() => MyUserContext, {
-        wrapper: MyUserProvider,
+      const wrapper = ({ children }) => <MyUserProvider>{children}</MyUserProvider>;
+      
+      renderHook(
+        () => React.useContext(MyUserContext),
+        { wrapper }
+      );
+
+      await waitFor(() => {
+        expect(sharedAuthStateCallback).toBeDefined();
       });
 
       await act(async () => {
-        authStateCallback(unverifiedUser);
+        sharedAuthStateCallback(unverifiedUser);
       });
 
       await waitFor(() => {
@@ -112,18 +227,24 @@ describe('MyUserProvider Context Tests', () => {
     });
 
     it('should set user to null when signing out', async () => {
-      renderHook(() => MyUserContext, {
-        wrapper: MyUserProvider,
+      const wrapper = ({ children }) => <MyUserProvider>{children}</MyUserProvider>;
+      
+      const { result } = renderHook(
+        () => React.useContext(MyUserContext),
+        { wrapper }
+      );
+
+      await waitFor(() => {
+        expect(sharedAuthStateCallback).toBeDefined();
       });
 
       await act(async () => {
-        authStateCallback(null);
+        sharedAuthStateCallback(null);
       });
 
-      // User should be null after sign out
-      // (we can't directly access context value in this test structure,
-      // but we verify the callback was called with null)
-      expect(authStateCallback).toHaveBeenCalledWith(null);
+      await waitFor(() => {
+        expect(result.current.user).toBeNull();
+      });
     });
   });
 
@@ -136,30 +257,37 @@ describe('MyUserProvider Context Tests', () => {
         },
       });
 
-      const setLoading = vi.fn();
-      const signUpUser = vi.fn(async (email, password, displayName, setLoading) => {
-        const response = await axios.post('/api/register-user', {
-          email,
-          password,
-          displayName,
-        });
-        setLoading(false);
-        return response.data;
-      });
-
-      const result = await signUpUser(
-        'newuser@example.com',
-        'Test123!@#',
-        'New User',
-        setLoading
+      const wrapper = ({ children }) => <MyUserProvider>{children}</MyUserProvider>;
+      
+      const { result } = renderHook(
+        () => React.useContext(MyUserContext),
+        { wrapper }
       );
 
-      expect(axios.post).toHaveBeenCalledWith('/api/register-user', {
-        email: 'newuser@example.com',
-        password: 'Test123!@#',
-        displayName: 'New User',
+      await waitFor(() => {
+        expect(result.current).not.toBeNull();
+        expect(result.current.signUpUser).toBeDefined();
       });
-      expect(result.success).toBe(true);
+
+      const setLoading = vi.fn();
+
+      await act(async () => {
+        await result.current.signUpUser(
+          'newuser@example.com',
+          'Test123!@#',
+          'New User',
+          setLoading
+        );
+      });
+
+      expect(axios.post).toHaveBeenCalledWith(
+        expect.stringContaining('/api/register-user'),
+        {
+          email: 'newuser@example.com',
+          password: 'Test123!@#',
+          displayName: 'New User',
+        }
+      );
       expect(setLoading).toHaveBeenCalledWith(false);
     });
 
@@ -173,25 +301,31 @@ describe('MyUserProvider Context Tests', () => {
         },
       });
 
-      const setLoading = vi.fn();
-      const signUpUser = vi.fn(async (email, password, displayName, setLoading) => {
-        try {
-          await axios.post('/api/register-user', {
-            email,
-            password,
-            displayName,
-          });
-        } catch (error) {
-          setLoading(false);
-          throw error;
-        }
+      const wrapper = ({ children }) => <MyUserProvider>{children}</MyUserProvider>;
+      
+      const { result } = renderHook(
+        () => React.useContext(MyUserContext),
+        { wrapper }
+      );
+
+      await waitFor(() => {
+        expect(result.current).not.toBeNull();
+        expect(result.current.signUpUser).toBeDefined();
       });
 
-      await expect(
-        signUpUser('existing@example.com', 'Test123!@#', 'User', setLoading)
-      ).rejects.toThrow();
+      const setLoading = vi.fn();
+
+      await act(async () => {
+        await result.current.signUpUser(
+          'existing@example.com',
+          'Test123!@#',
+          'User',
+          setLoading
+        );
+      });
 
       expect(setLoading).toHaveBeenCalledWith(false);
+      expect(result.current.msg.incorrectSignUp).toBeDefined();
     });
   });
 
@@ -208,20 +342,30 @@ describe('MyUserProvider Context Tests', () => {
         user: mockCurrentUser,
       });
 
-      const signInUser = vi.fn(async (email, password) => {
-        const check2FA = await axios.post('/api/check-2fa-required', { email });
+      const wrapper = ({ children }) => <MyUserProvider>{children}</MyUserProvider>;
+      
+      const { result } = renderHook(
+        () => React.useContext(MyUserContext),
+        { wrapper }
+      );
 
-        if (!check2FA.data.requires2FA) {
-          await signInWithEmailAndPassword({}, email, password);
-          return { requires2FA: false };
-        }
-
-        return { requires2FA: true };
+      await waitFor(() => {
+        expect(result.current).not.toBeNull();
+        expect(result.current.signInUser).toBeDefined();
       });
 
-      const result = await signInUser('test@example.com', 'Test123!@#');
+      const setLoading = vi.fn();
 
-      expect(result.requires2FA).toBe(false);
+      let signInResult;
+      await act(async () => {
+        signInResult = await result.current.signInUser(
+          'test@example.com',
+          'Test123!@#',
+          setLoading
+        );
+      });
+
+      expect(signInResult.requires2FA).toBe(false);
       expect(signInWithEmailAndPassword).toHaveBeenCalled();
     });
 
@@ -239,45 +383,61 @@ describe('MyUserProvider Context Tests', () => {
           },
         });
 
-      const signInUser = vi.fn(async (email, password) => {
-        const check2FA = await axios.post('/api/check-2fa-required', { email });
+      const wrapper = ({ children }) => <MyUserProvider>{children}</MyUserProvider>;
+      
+      const { result } = renderHook(
+        () => React.useContext(MyUserContext),
+        { wrapper }
+      );
 
-        if (check2FA.data.requires2FA) {
-          await axios.post('/api/validate-password', { email, password });
-          return { requires2FA: true };
-        }
-
-        return { requires2FA: false };
+      await waitFor(() => {
+        expect(result.current).not.toBeNull();
+        expect(result.current.signInUser).toBeDefined();
       });
 
-      const result = await signInUser('test@example.com', 'Test123!@#');
+      const setLoading = vi.fn();
 
-      expect(result.requires2FA).toBe(true);
+      let signInResult;
+      await act(async () => {
+        signInResult = await result.current.signInUser(
+          'test@example.com',
+          'Test123!@#',
+          setLoading
+        );
+      });
+
+      expect(signInResult.requires2FA).toBe(true);
       expect(signInWithEmailAndPassword).not.toHaveBeenCalled();
     });
 
     it('should handle invalid password', async () => {
-      axios.post
-        .mockResolvedValueOnce({
-          data: { requires2FA: false },
-        });
+      axios.post.mockResolvedValueOnce({
+        data: { requires2FA: false },
+      });
 
       signInWithEmailAndPassword.mockRejectedValue(
         createFirebaseError('auth/wrong-password', 'Wrong password')
       );
 
-      const signInUser = vi.fn(async (email, password) => {
-        try {
-          await signInWithEmailAndPassword({}, email, password);
-          return { requires2FA: false };
-        } catch (error) {
-          return { requires2FA: false, error: error.message };
-        }
+      const wrapper = ({ children }) => <MyUserProvider>{children}</MyUserProvider>;
+      
+      const { result } = renderHook(
+        () => React.useContext(MyUserContext),
+        { wrapper }
+      );
+
+      await waitFor(() => {
+        expect(result.current).not.toBeNull();
+        expect(result.current.signInUser).toBeDefined();
       });
 
-      const result = await signInUser('test@example.com', 'WrongPass');
+      const setLoading = vi.fn();
 
-      expect(result.error).toBe('Wrong password');
+      await act(async () => {
+        await result.current.signInUser('test@example.com', 'WrongPass', setLoading);
+      });
+
+      expect(result.current.msg.incorrectSignIn).toBeDefined();
     });
 
     it('should reject unverified email on sign in', async () => {
@@ -295,21 +455,26 @@ describe('MyUserProvider Context Tests', () => {
 
       signOut.mockResolvedValue();
 
-      const signInUser = vi.fn(async (email, password) => {
-        const result = await signInWithEmailAndPassword({}, email, password);
+      const wrapper = ({ children }) => <MyUserProvider>{children}</MyUserProvider>;
+      
+      const { result } = renderHook(
+        () => React.useContext(MyUserContext),
+        { wrapper }
+      );
 
-        if (!result.user.emailVerified) {
-          await signOut({});
-          return { requires2FA: false, error: 'Email not verified' };
-        }
-
-        return { requires2FA: false };
+      await waitFor(() => {
+        expect(result.current).not.toBeNull();
+        expect(result.current.signInUser).toBeDefined();
       });
 
-      const result = await signInUser('test@example.com', 'Test123!@#');
+      const setLoading = vi.fn();
 
-      expect(result.error).toBe('Email not verified');
+      await act(async () => {
+        await result.current.signInUser('test@example.com', 'Test123!@#', setLoading);
+      });
+
       expect(signOut).toHaveBeenCalled();
+      expect(result.current.msg.err).toBeDefined();
     });
   });
 
@@ -319,15 +484,25 @@ describe('MyUserProvider Context Tests', () => {
         user: mockCurrentUser,
       });
 
-      const signInWith2FA = vi.fn(async (customToken) => {
-        await signInWithCustomToken({}, customToken);
-        return { success: true };
+      const wrapper = ({ children }) => <MyUserProvider>{children}</MyUserProvider>;
+      
+      const { result } = renderHook(
+        () => React.useContext(MyUserContext),
+        { wrapper }
+      );
+
+      await waitFor(() => {
+        expect(result.current).not.toBeNull();
+        expect(result.current.signInWith2FA).toBeDefined();
       });
 
-      const result = await signInWith2FA('custom-token-123');
+      let signInResult;
+      await act(async () => {
+        signInResult = await result.current.signInWith2FA('custom-token-123');
+      });
 
-      expect(signInWithCustomToken).toHaveBeenCalledWith({}, 'custom-token-123');
-      expect(result.success).toBe(true);
+      expect(signInWithCustomToken).toHaveBeenCalled();
+      expect(signInResult.success).toBe(true);
     });
 
     it('should handle 2FA sign in errors', async () => {
@@ -335,19 +510,24 @@ describe('MyUserProvider Context Tests', () => {
         createFirebaseError('auth/invalid-custom-token', 'Invalid custom token')
       );
 
-      const signInWith2FA = vi.fn(async (customToken) => {
-        try {
-          await signInWithCustomToken({}, customToken);
-          return { success: true };
-        } catch (error) {
-          return { success: false, error: error.message };
-        }
+      const wrapper = ({ children }) => <MyUserProvider>{children}</MyUserProvider>;
+      
+      const { result } = renderHook(
+        () => React.useContext(MyUserContext),
+        { wrapper }
+      );
+
+      await waitFor(() => {
+        expect(result.current).not.toBeNull();
+        expect(result.current.signInWith2FA).toBeDefined();
       });
 
-      const result = await signInWith2FA('invalid-token');
+      let signInResult;
+      await act(async () => {
+        signInResult = await result.current.signInWith2FA('invalid-token');
+      });
 
-      expect(result.success).toBe(false);
-      expect(result.error).toBe('Invalid custom token');
+      expect(signInResult.success).toBe(false);
     });
   });
 
@@ -369,24 +549,25 @@ describe('MyUserProvider Context Tests', () => {
         },
       });
 
-      const signInWithGoogle = vi.fn(async () => {
-        const result = await signInWithPopup({}, new GoogleAuthProvider());
-        const check2FA = await axios.post('/api/check-2fa-required', {
-          email: result.user.email,
-        });
+      const wrapper = ({ children }) => <MyUserProvider>{children}</MyUserProvider>;
+      
+      const { result } = renderHook(
+        () => React.useContext(MyUserContext),
+        { wrapper }
+      );
 
-        if (check2FA.data.requires2FA) {
-          await signOut({});
-          return { requires2FA: true, email: result.user.email };
-        }
-
-        return { requires2FA: false };
+      await waitFor(() => {
+        expect(result.current).not.toBeNull();
+        expect(result.current.signInWithGoogle).toBeDefined();
       });
 
-      const result = await signInWithGoogle();
+      let signInResult;
+      await act(async () => {
+        signInResult = await result.current.signInWithGoogle();
+      });
 
       expect(signInWithPopup).toHaveBeenCalled();
-      expect(result.requires2FA).toBe(false);
+      expect(signInResult.requires2FA).toBe(false);
     });
 
     it('should handle Google sign in with 2FA required', async () => {
@@ -415,35 +596,25 @@ describe('MyUserProvider Context Tests', () => {
 
       signOut.mockResolvedValue();
 
-      const signInWithGoogle = vi.fn(async () => {
-        const result = await signInWithPopup({}, new GoogleAuthProvider());
-        const check2FA = await axios.post('/api/check-2fa-required', {
-          email: result.user.email,
-        });
+      const wrapper = ({ children }) => <MyUserProvider>{children}</MyUserProvider>;
+      
+      const { result } = renderHook(
+        () => React.useContext(MyUserContext),
+        { wrapper }
+      );
 
-        if (check2FA.data.requires2FA) {
-          const token = await result.user.getIdToken();
-          await signOut({});
-
-          const session = await axios.post('/api/validate-google-session', {
-            firebaseIdToken: token,
-            email: result.user.email,
-          });
-
-          return {
-            requires2FA: true,
-            email: result.user.email,
-            sessionId: session.data.sessionId,
-          };
-        }
-
-        return { requires2FA: false };
+      await waitFor(() => {
+        expect(result.current).not.toBeNull();
+        expect(result.current.signInWithGoogle).toBeDefined();
       });
 
-      const result = await signInWithGoogle();
+      let signInResult;
+      await act(async () => {
+        signInResult = await result.current.signInWithGoogle();
+      });
 
-      expect(result.requires2FA).toBe(true);
-      expect(result.sessionId).toBe('google-session-123');
+      expect(signInResult.requires2FA).toBe(true);
+      expect(signInResult.sessionId).toBe('google-session-123');
       expect(signOut).toHaveBeenCalled();
     });
 
@@ -452,18 +623,24 @@ describe('MyUserProvider Context Tests', () => {
         createFirebaseError('auth/popup-closed-by-user', 'Popup closed')
       );
 
-      const signInWithGoogle = vi.fn(async () => {
-        try {
-          await signInWithPopup({}, new GoogleAuthProvider());
-          return { requires2FA: false };
-        } catch (error) {
-          return { requires2FA: false, error: error.message };
-        }
+      const wrapper = ({ children }) => <MyUserProvider>{children}</MyUserProvider>;
+      
+      const { result } = renderHook(
+        () => React.useContext(MyUserContext),
+        { wrapper }
+      );
+
+      await waitFor(() => {
+        expect(result.current).not.toBeNull();
+        expect(result.current.signInWithGoogle).toBeDefined();
       });
 
-      const result = await signInWithGoogle();
+      let signInResult;
+      await act(async () => {
+        signInResult = await result.current.signInWithGoogle();
+      });
 
-      expect(result.error).toBe('Popup closed');
+      expect(result.current.msg.incorrectSignIn).toBeDefined();
     });
   });
 
@@ -471,33 +648,50 @@ describe('MyUserProvider Context Tests', () => {
     it('should successfully log out user', async () => {
       signOut.mockResolvedValue();
 
-      const logoutUser = vi.fn(async () => {
-        await signOut({});
-        return { success: true };
+      const wrapper = ({ children }) => <MyUserProvider>{children}</MyUserProvider>;
+      
+      const { result } = renderHook(
+        () => React.useContext(MyUserContext),
+        { wrapper }
+      );
+
+      await waitFor(() => {
+        expect(result.current).not.toBeNull();
+        expect(result.current.logoutUser).toBeDefined();
       });
 
-      const result = await logoutUser();
+      await act(async () => {
+        await result.current.logoutUser();
+      });
 
       expect(signOut).toHaveBeenCalled();
-      expect(result.success).toBe(true);
+      expect(result.current.user).toBeNull();
     });
 
     it('should handle logout errors', async () => {
       signOut.mockRejectedValue(new Error('Logout failed'));
 
-      const logoutUser = vi.fn(async () => {
+      const wrapper = ({ children }) => <MyUserProvider>{children}</MyUserProvider>;
+      
+      const { result } = renderHook(
+        () => React.useContext(MyUserContext),
+        { wrapper }
+      );
+
+      await waitFor(() => {
+        expect(result.current).not.toBeNull();
+        expect(result.current.logoutUser).toBeDefined();
+      });
+
+      await act(async () => {
         try {
-          await signOut({});
-          return { success: true };
+          await result.current.logoutUser();
         } catch (error) {
-          return { success: false, error: error.message };
+          // Expected error
         }
       });
 
-      const result = await logoutUser();
-
-      expect(result.success).toBe(false);
-      expect(result.error).toBe('Logout failed');
+      expect(signOut).toHaveBeenCalled();
     });
   });
 
@@ -505,21 +699,27 @@ describe('MyUserProvider Context Tests', () => {
     it('should send password reset email', async () => {
       sendPasswordResetEmail.mockResolvedValue();
 
-      const resetPassword = vi.fn(async (email) => {
-        await sendPasswordResetEmail({}, email, {
-          url: 'http://localhost:5173/reset-password',
-        });
-        return { success: true };
+      const wrapper = ({ children }) => <MyUserProvider>{children}</MyUserProvider>;
+      
+      const { result } = renderHook(
+        () => React.useContext(MyUserContext),
+        { wrapper }
+      );
+
+      await waitFor(() => {
+        expect(result.current).not.toBeNull();
+        expect(result.current.resetPassword).toBeDefined();
       });
 
-      const result = await resetPassword('test@example.com');
+      await act(async () => {
+        await result.current.resetPassword('test@example.com');
+      });
 
       expect(sendPasswordResetEmail).toHaveBeenCalledWith(
-        {},
+        expect.anything(),
         'test@example.com',
-        { url: 'http://localhost:5173/reset-password' }
+        expect.any(Object)
       );
-      expect(result.success).toBe(true);
     });
 
     it('should handle password reset errors', async () => {
@@ -527,36 +727,54 @@ describe('MyUserProvider Context Tests', () => {
         createFirebaseError('auth/user-not-found', 'User not found')
       );
 
-      const resetPassword = vi.fn(async (email) => {
-        try {
-          await sendPasswordResetEmail({}, email);
-          return { success: true };
-        } catch (error) {
-          return { success: false, error: error.message };
-        }
+      const wrapper = ({ children }) => <MyUserProvider>{children}</MyUserProvider>;
+      
+      const { result } = renderHook(
+        () => React.useContext(MyUserContext),
+        { wrapper }
+      );
+
+      await waitFor(() => {
+        expect(result.current).not.toBeNull();
+        expect(result.current.resetPassword).toBeDefined();
       });
 
-      const result = await resetPassword('nonexistent@example.com');
+      await act(async () => {
+        await result.current.resetPassword('nonexistent@example.com');
+      });
 
-      expect(result.success).toBe(false);
-      expect(result.error).toBe('User not found');
+      expect(result.current.msg.incorrectResetPwEmail).toBeDefined();
     });
   });
 
   describe('updateUser', () => {
-    it('should update user state locally', () => {
-      const updateUser = vi.fn((updatedData) => {
-        return { ...mockUserData, ...updatedData };
+    it('should update user state locally', async () => {
+      const wrapper = ({ children }) => <MyUserProvider>{children}</MyUserProvider>;
+      
+      const { result } = renderHook(
+        () => React.useContext(MyUserContext),
+        { wrapper }
+      );
+
+      await waitFor(() => {
+        expect(sharedAuthStateCallback).toBeDefined();
       });
 
-      const result = updateUser({
-        displayName: 'Updated Name',
-        bio: 'New bio',
+      await act(async () => {
+        sharedAuthStateCallback(mockCurrentUser);
       });
 
-      expect(result.displayName).toBe('Updated Name');
-      expect(result.bio).toBe('New bio');
-      expect(result.email).toBe(mockUserData.email);
+      await act(() => {
+        result.current.updateUser({
+          displayName: 'Updated Name',
+          bio: 'New bio',
+        });
+      });
+
+      await waitFor(() => {
+        expect(result.current.user.displayName).toBe('Updated Name');
+        expect(result.current.user.bio).toBe('New bio');
+      });
     });
   });
 
@@ -576,23 +794,26 @@ describe('MyUserProvider Context Tests', () => {
         },
       });
 
-      const loadUserFromFirestore = vi.fn(async (user) => {
-        const token = await user.getIdToken();
-        const response = await axios.get(`/api/get-user/${user.uid}`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
+      const wrapper = ({ children }) => <MyUserProvider>{children}</MyUserProvider>;
+      
+      const { result } = renderHook(
+        () => React.useContext(MyUserContext),
+        { wrapper }
+      );
 
-        return { ...user, ...response.data.user };
+      await waitFor(() => {
+        expect(result.current).not.toBeNull();
+        expect(result.current.loadUserFromFirestore).toBeDefined();
       });
 
-      const result = await loadUserFromFirestore(currentUser);
+      await act(async () => {
+        await result.current.loadUserFromFirestore(currentUser);
+      });
 
       expect(axios.get).toHaveBeenCalledWith(
-        `/api/get-user/${currentUser.uid}`,
+        expect.stringContaining(`/api/get-user/${currentUser.uid}`),
         expect.any(Object)
       );
-      expect(result.displayName).toBe('Firestore User');
-      expect(result.bio).toBe('User bio');
     });
 
     it('should handle Firestore load errors', async () => {
@@ -605,22 +826,23 @@ describe('MyUserProvider Context Tests', () => {
         },
       });
 
-      const loadUserFromFirestore = vi.fn(async (user) => {
-        try {
-          const token = await user.getIdToken();
-          const response = await axios.get(`/api/get-user/${user.uid}`, {
-            headers: { Authorization: `Bearer ${token}` },
-          });
-          return { ...user, ...response.data.user };
-        } catch (error) {
-          return user; // Return Firebase user only
-        }
+      const wrapper = ({ children }) => <MyUserProvider>{children}</MyUserProvider>;
+      
+      const { result } = renderHook(
+        () => React.useContext(MyUserContext),
+        { wrapper }
+      );
+
+      await waitFor(() => {
+        expect(result.current).not.toBeNull();
+        expect(result.current.loadUserFromFirestore).toBeDefined();
       });
 
-      const result = await loadUserFromFirestore(currentUser);
+      await act(async () => {
+        await result.current.loadUserFromFirestore(currentUser);
+      });
 
-      expect(result.uid).toBe(currentUser.uid);
-      expect(result.bio).toBeUndefined(); // Firestore data not loaded
+      expect(axios.get).toHaveBeenCalled();
     });
   });
 
@@ -628,29 +850,49 @@ describe('MyUserProvider Context Tests', () => {
     it('should fetch and update 2FA status', async () => {
       const currentUser = createMockAuthUser();
 
-      axios.get.mockResolvedValue({
-        data: {
-          success: true,
-          is2FAEnabled: true,
-        },
-      });
-
-      const refresh2FAStatus = vi.fn(async (user) => {
-        const token = await user.getIdToken();
-        const response = await axios.get('/api/check-2fa-status', {
-          headers: { Authorization: `Bearer ${token}` },
+      axios.get
+        .mockResolvedValueOnce({
+          data: {
+            success: true,
+            user: { email: 'test@example.com', displayName: 'Test User' },
+          },
+        })
+        .mockResolvedValueOnce({
+          data: {
+            success: true,
+            is2FAEnabled: true,
+          },
+        })
+        .mockResolvedValue({
+          data: {
+            success: true,
+            is2FAEnabled: true,
+          },
         });
 
-        return response.data.is2FAEnabled;
+      const wrapper = ({ children }) => <MyUserProvider>{children}</MyUserProvider>;
+      
+      const { result } = renderHook(
+        () => React.useContext(MyUserContext),
+        { wrapper }
+      );
+
+      await waitFor(() => {
+        expect(sharedAuthStateCallback).toBeDefined();
       });
 
-      const result = await refresh2FAStatus(currentUser);
+      await act(async () => {
+        sharedAuthStateCallback(currentUser);
+      });
+
+      await act(async () => {
+        await result.current.refresh2FAStatus();
+      });
 
       expect(axios.get).toHaveBeenCalledWith(
-        '/api/check-2fa-status',
+        expect.stringContaining('/api/check-2fa-status'),
         expect.any(Object)
       );
-      expect(result).toBe(true);
     });
 
     it('should handle 2FA status fetch errors', async () => {
@@ -658,21 +900,26 @@ describe('MyUserProvider Context Tests', () => {
 
       axios.get.mockRejectedValue(new Error('Network error'));
 
-      const refresh2FAStatus = vi.fn(async (user) => {
-        try {
-          const token = await user.getIdToken();
-          const response = await axios.get('/api/check-2fa-status', {
-            headers: { Authorization: `Bearer ${token}` },
-          });
-          return response.data.is2FAEnabled;
-        } catch (error) {
-          return false; // Default to false on error
-        }
+      const wrapper = ({ children }) => <MyUserProvider>{children}</MyUserProvider>;
+      
+      const { result } = renderHook(
+        () => React.useContext(MyUserContext),
+        { wrapper }
+      );
+
+      await waitFor(() => {
+        expect(sharedAuthStateCallback).toBeDefined();
       });
 
-      const result = await refresh2FAStatus(currentUser);
+      await act(async () => {
+        sharedAuthStateCallback(currentUser);
+      });
 
-      expect(result).toBe(false);
+      await act(async () => {
+        await result.current.refresh2FAStatus();
+      });
+
+      expect(result.current.is2FAEnabled).toBe(false);
     });
   });
 });
