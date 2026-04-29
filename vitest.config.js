@@ -4,19 +4,20 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const testingNodeModules = path.resolve(__dirname, './node_modules');
 
 export default defineConfig({
   plugins: [react()],
   test: {
     globals: true,
     environment: 'jsdom',
-    setupFiles: './tests/setup.js',
+    setupFiles: './setup.js',
     exclude: [
       '**/node_modules/**',
       '**/dist/**',
       '**/e2e/**',
       '**/.{idea,git,cache,output,temp}/**',
-      '**/{karma,rollup,webpack,vite,vitest,jest,ava,babel,nyc,cypress,tsup,build}.config.*'
+      '**/{karma,rollup,webpack,vite,vitest,jest,ava,babel,nyc,cypress,tsup,build}.config.*',
     ],
     coverage: {
       provider: 'v8',
@@ -25,19 +26,15 @@ export default defineConfig({
         'node_modules/',
         'tests/',
         '**/*.config.js',
-        '**/mocks/**'
-      ]
+        '**/mocks/**',
+      ],
     },
-    // ✅ KRITIKUS JAVÍTÁS: A Firebase modulokat inline kell kezelni,
-    // hogy a vi.mock() mock-ok elfogják a hívásokat SSR módban is.
-    // Az 'external' lista tiltja, hogy a Vite SSR-ként kezelje ezeket.
     server: {
       deps: {
         inline: [
           'react',
           'react-dom',
           '@testing-library/react',
-          // Firebase - minden al-csomag inline kell
           'firebase',
           '@firebase/app',
           '@firebase/auth',
@@ -48,19 +45,28 @@ export default defineConfig({
           '@firebase/installations',
           '@firebase/messaging',
           '@firebase/analytics',
-        ]
-      }
-    }
+        ],
+      },
+    },
   },
   resolve: {
-    alias: {
-      '@': path.resolve(__dirname, './src'),
-      // ✅ KRITIKUS: React aliasok - csak egy példány használata
-      'react': path.resolve(__dirname, './node_modules/react'),
-      'react-dom': path.resolve(__dirname, './node_modules/react-dom'),
-    }
+    dedupe: ['react', 'react-dom', 'axios'],
+    alias: [
+      { find: '@', replacement: path.resolve(__dirname, './src') },
+      // Keep the renderer and imported frontend components on one React instance.
+      { find: /^react$/, replacement: path.resolve(testingNodeModules, 'react/index.js') },
+      { find: /^react\/jsx-runtime$/, replacement: path.resolve(testingNodeModules, 'react/jsx-runtime.js') },
+      { find: /^react\/jsx-dev-runtime$/, replacement: path.resolve(testingNodeModules, 'react/jsx-dev-runtime.js') },
+      { find: /^react-dom$/, replacement: path.resolve(testingNodeModules, 'react-dom/index.js') },
+      { find: /^react-dom\/client$/, replacement: path.resolve(testingNodeModules, 'react-dom/client.js') },
+      { find: /^react-dom\/test-utils$/, replacement: path.resolve(testingNodeModules, 'react-dom/test-utils.js') },
+      { find: /^axios$/, replacement: path.resolve(testingNodeModules, 'axios/index.js') },
+      { find: /^framer-motion$/, replacement: path.resolve(__dirname, './mocks/framer-motion.js') },
+      { find: /^firebase\/auth$/, replacement: path.resolve(__dirname, './mocks/firebase-auth.js') },
+      { find: /.*firebase\/firebaseApp$/, replacement: path.resolve(__dirname, './mocks/firebase-app.js') },
+      { find: /.*firebase\\firebaseApp$/, replacement: path.resolve(__dirname, './mocks/firebase-app.js') },
+    ],
   },
-  // ✅ ÚJ: SSR konfiguráció - Firebase ne legyen external SSR modul
   ssr: {
     noExternal: [
       'firebase',
@@ -69,6 +75,6 @@ export default defineConfig({
       '@firebase/app',
       '@firebase/util',
       '@firebase/component',
-    ]
-  }
+    ],
+  },
 });
